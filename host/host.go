@@ -15,6 +15,7 @@ import (
 	"github.com/flynn/flynn/discoverd/client"
 	"github.com/flynn/flynn/host/cli"
 	"github.com/flynn/flynn/host/config"
+	"github.com/flynn/flynn/host/logmux"
 	"github.com/flynn/flynn/host/sampi"
 	"github.com/flynn/flynn/host/types"
 	"github.com/flynn/flynn/host/volume"
@@ -177,28 +178,6 @@ func runDaemon(args *docopt.Args) {
 		shutdown.Fatal(err)
 	}
 
-	switch backendName {
-	case "libvirt-lxc":
-		backend, err = NewLibvirtLXCBackend(state, vman, legacyVolPath, "/tmp/flynn-host-logs", flynnInit)
-	default:
-		log.Fatalf("unknown backend %q", backendName)
-	}
-	if err != nil {
-		shutdown.Fatal(err)
-	}
-
-	if err := state.Restore(backend); err != nil {
-		shutdown.Fatal(err)
-	}
-
-	shutdown.BeforeExit(func() { backend.Cleanup() })
-
-	if force {
-		if err := backend.Cleanup(); err != nil {
-			shutdown.Fatal(err)
-		}
-	}
-
 	runner := &manifestRunner{
 		env:          parseEnviron(),
 		externalAddr: externalAddr,
@@ -208,6 +187,7 @@ func runDaemon(args *docopt.Args) {
 		vman:         vman,
 	}
 
+	// connect to discoverd
 	discURL := os.Getenv("DISCOVERD")
 	var disc *discoverd.Client
 	if manifestFile != "" {
@@ -270,8 +250,33 @@ func runDaemon(args *docopt.Args) {
 		cluster,
 		vman,
 	)
+
+	mux, err := logmux.New(disc, 1000)
 	if err != nil {
 		shutdown.Fatal(err)
+	}
+	shutdown.BeforeExit(func() { mux.Close() })
+
+	switch backendName {
+	case "libvirt-lxc":
+		backend, err = NewLibvirtLXCBackend(state, vman, legacyVolPath, "/tmp/flynn-host-logs", flynnInit, mux)
+	default:
+		log.Fatalf("unknown backend %q", backendName)
+	}
+	if err != nil {
+		shutdown.Fatal(err)
+	}
+
+	if err := state.Restore(backend); err != nil {
+		shutdown.Fatal(err)
+	}
+
+	shutdown.BeforeExit(func() { backend.Cleanup() })
+
+	if force {
+		if err := backend.Cleanup(); err != nil {
+			shutdown.Fatal(err)
+		}
 	}
 
 	sampiAPI := sampi.NewHTTPAPI(sampi.NewCluster())
